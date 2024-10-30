@@ -1,0 +1,679 @@
+import os
+import tkinter as tk
+import pandas as pd
+import numpy as np
+from scipy.optimize import minimize, Bounds, LinearConstraint, NonlinearConstraint
+from scipy.stats import gmean, spearmanr
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+
+warnings.filterwarnings('ignore', message='delta_grad == 0.0. Check if the approximated')
+warnings.filterwarnings('ignore', message='Values in x were outside bounds during a minimize step, clipping to bounds')
+warnings.filterwarnings('ignore', message='Data Validation extension is not supported and will be removed')
+
+
+#################### FUCOM ####################
+
+def FUCOM(comp_prio):
+    def Obj(X):
+        return X[-1]  # Minimizar X (a última variável)
+
+    np.random.seed(42)
+    vetor_crit = np.random.uniform(low=0.001, high=1.0, size=len(comp_prio))
+    vetor_crit = vetor_crit / np.sum(vetor_crit)
+    vetor_crit = np.append(vetor_crit, 1.0)  # Adiciona X como última variável
+
+    weights = vetor_crit[:-1]
+    X = vetor_crit[-1]
+
+    ideal_1 = weights[:-1] / weights[1:]
+    subjetiva_1 = np.array(comp_prio[1:]) / np.array(comp_prio[:-1])
+
+    def desvio_1(vetor_crit):
+        weights = vetor_crit[:-1]
+        return np.abs((weights[:-1] / weights[1:]) - subjetiva_1) - vetor_crit[-1]
+
+    restr_1 = NonlinearConstraint(desvio_1, -np.inf, 0)
+
+    ideal_2 = weights[:-2] / weights[2:]
+    subjetiva_2 = np.array(comp_prio[2:]) / np.array(comp_prio[:-2])
+
+    def desvio_2(vetor_crit):
+        weights = vetor_crit[:-1]
+        return np.abs((weights[:-2] / weights[2:]) - subjetiva_2) - vetor_crit[-1]
+
+    restr_2 = NonlinearConstraint(desvio_2, -np.inf, 0)
+
+    limites = Bounds(np.append(np.full(len(comp_prio), 0.0001), 0.0001), np.append(np.full(len(comp_prio), 1.0), 1.0))
+    restricao_soma_crit = LinearConstraint(np.append(np.ones(len(comp_prio)), 0), 1, 1)
+
+    try:
+        solucao = minimize(Obj, vetor_crit, method='SLSQP', constraints=[restr_1, restr_2, restricao_soma_crit],
+                           bounds=limites)
+        if solucao.success:
+            w = solucao.x[:-1]
+            Sol = solucao.fun
+            return w, Sol
+        else:
+            print('Otimização não convergiu.')
+            return None, None
+    except Exception as e:
+        print(f'Erro na otimização: {e}')
+        return None, None
+
+
+########### Gráficos ###########
+
+##### Gráfico de pizza #####
+def plot_pizza_chart(df_entre_grupos):
+    # Extraia os pesos dos grupos
+    pesos = df_entre_grupos['Pesos'].values
+    criterios = df_entre_grupos['Critérios'].values
+
+    # Crie o gráfico de pizza
+    plt.figure(figsize=(8, 8))
+    plt.pie(pesos, labels=criterios, autopct='%1.1f%%', startangle=140, colors=sns.color_palette('pastel'))
+    plt.title('Distribuição dos Pesos dos Grupos')
+    plt.show()
+
+
+##### Gráfico de barras circular #####
+def plot_circular_barplot(df_FUCOM_agregado):
+    # Extraia os dados
+    criterios = df_FUCOM_agregado['Critérios']
+    pesos = df_FUCOM_agregado['Pesos']
+
+    num_barras = len(criterios)
+
+    angulos = np.linspace(0, 2 * np.pi, num_barras, endpoint=False).tolist()
+
+    # Os ângulos estão duplicados para formar um círculo
+    angulos += angulos[:1]
+    pesos = np.append(pesos, pesos[0])
+
+    # Configuração da figura e eixo polar
+    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
+
+    # Criação das barras
+    barras = ax.bar(angulos, pesos, width=2 * np.pi / num_barras, edgecolor='white', linewidth=2)
+
+    # Adicionando rótulos
+    ax.set_yticklabels([])
+    ax.set_xticks(angulos[:-1])
+    ax.set_xticklabels(criterios)
+
+    # Ajuste do gráfico
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    # Cor das barras utilizando uma paleta de cores variada
+    colors = plt.cm.tab20(np.linspace(0, 1, num_barras))
+    for barra, color in zip(barras, colors):
+        barra.set_facecolor(color)
+
+    # Adicionando anotações nos raios
+    for angulo, peso, criterio in zip(angulos, pesos, criterios):
+        ax.text(angulo, peso + max(pesos) * 0.05, f'{peso:.4f}', horizontalalignment='center', size=10,
+                color='black', weight='semibold')
+
+    plt.title('Circular Barplot dos Pesos dos Critérios')
+    plt.show()
+
+def plot_histogram_ordenacoes(df_resultados):
+    plt.figure(figsize=(10, 6))
+    sns.histplot(df_resultados['Ordem das Alternativas'], bins=10, kde=False, color='skyblue')
+    plt.title('Distribuição das Ordens das Alternativas')
+    plt.xlabel('Ordenações')
+    plt.ylabel('Frequência')
+    plt.show()
+
+
+#################### Seleção do Arquivo ####################
+
+def selecionar_arquivo():
+    root = tk.Tk()
+    root.withdraw()  # Esconder a janela principal
+    diretorio_atual = os.path.dirname(os.path.abspath(__file__))
+    arquivos = [f for f in os.listdir(diretorio_atual) if f.endswith('.xlsx') and f.startswith('input')]
+
+    if not arquivos:
+        print('Nenhum arquivo com o prefixo "input" e extensão .xlsx encontrado na pasta.')
+        return None
+
+    print('Arquivos encontrados:')
+    for i, arquivo in enumerate(arquivos):
+        print(f'{i + 1}: {arquivo}')
+
+    escolha = int(input('Escolha o número do arquivo desejado: '))
+
+    if 1 <= escolha <= len(arquivos):
+        return os.path.join(diretorio_atual, arquivos[escolha - 1])
+    else:
+        print('Escolha inválida.')
+        return None
+
+
+#################### Aplicação do FUCOM ####################
+
+n = int(input('Quantos analistas/especialistas envolvidos na decisão: '))
+
+k = 1
+while k <= n:
+    arquivo_input_crit = selecionar_arquivo()
+    if arquivo_input_crit is None:
+        print('Nenhum arquivo selecionado. Saindo do programa.')
+        break
+
+    dataframe_lista = []
+
+    abas = pd.ExcelFile(arquivo_input_crit).sheet_names
+    df_entre_grupos = None
+    df_FUCOM = None
+    pesos_locais = []
+
+    for i, nome_aba in enumerate(abas):
+        print(f'\n--------------------------------------------\n'
+              f'Aplicando o FUCOM ao grupo: {nome_aba}')
+        df_input_FUCOM = pd.read_excel(arquivo_input_crit, sheet_name=nome_aba)
+        df_FUCOM = df_input_FUCOM.drop(df_input_FUCOM[(df_input_FUCOM == 0).any(axis=1)].index)
+        df_FUCOM.reset_index(drop=True, inplace=True)
+
+        comp_prio = df_FUCOM['Comp_prio'].tolist()
+
+        try:
+            pesos_locais, objetivo = FUCOM(comp_prio)
+            if pesos_locais is not None:
+                print(f'\nOtimização convergiu, Parabéns!!\nObjetivo: {objetivo}\nPesos locais: {pesos_locais}\n')
+                df_FUCOM['Pesos'] = pesos_locais
+                print(f'\nDataframe da aba {nome_aba}:\n{df_FUCOM}')
+
+                dataframe_lista.append(df_FUCOM)
+        except Exception as e:
+            print(f'Erro ao aplicar FUCOM: {e}')
+
+    if dataframe_lista:
+        dataframe_lista.pop()  # retira o último grupo, o grupo dos grupos
+
+        df_entre_grupos = df_FUCOM
+        df_entre_grupos = df_entre_grupos[df_entre_grupos['Critérios'].str.startswith('G')]
+        df_entre_grupos.reset_index(drop=True, inplace=True)
+        df_entre_grupos = df_entre_grupos.sort_values(by='Critérios')
+
+        # Gráfico de pizza para os grupos - de cada decisor
+        plot_pizza_chart(df_entre_grupos)
+
+
+        # Agregação dos pesos dos critérios
+        peso_dos_grupos = df_entre_grupos['Pesos'].tolist()
+
+        df_FUCOM_isolados = {}
+        for i, df in enumerate(dataframe_lista):
+            df_FUCOM_isolados[f'Dataframe {i}'] = df.copy()
+            df_FUCOM_isolados[f'Dataframe {i}']['Pesos'] *= peso_dos_grupos[i]
+
+        df_FUCOM_final_1 = pd.concat(df_FUCOM_isolados.values(), ignore_index=True)
+        linha_custo = df_FUCOM.loc[df_FUCOM['Critérios'].str.startswith('C')]
+        df_FUCOM_final_2 = pd.concat([df_FUCOM_final_1, linha_custo]).sort_values('Critérios', ascending=True).drop(
+            columns='Comp_prio')
+
+        df_FUCOM_final_2['Critério_Num'] = df_FUCOM_final_2['Critérios'].str.extract('(\d+)').astype(int)
+        df_FUCOM_final_2.sort_values(by='Critério_Num', inplace=True)
+        df_FUCOM_final_2.drop(columns=['Critério_Num'], inplace=True)
+        df_FUCOM_final_2 = df_FUCOM_final_2.reset_index(drop=True)
+
+        print(f'\nDataframe final: \n{df_FUCOM_final_2}\n')
+        df_FUCOM_final_2.to_excel(f'FUCOM_Vetor_de_Pesos_Globais_{k}.xlsx')
+
+        k = k + 1
+
+dataframes = []
+for i in range(1, n + 1):
+    df = pd.read_excel(f'FUCOM_Vetor_de_Pesos_Globais_{i}.xlsx', index_col=0)
+    dataframes.append(df)
+
+for i in range(1, n):
+    if not dataframes[i].index.equals(dataframes[0].index):
+        raise ValueError("Os dataframes não têm a mesma estrutura")
+
+df_FUCOM_agregado = dataframes[0].copy()
+vetor_pesos = np.array([df['Pesos'].values for df in dataframes])
+
+# desvio padrão por critério - considerando os pesos por decisor, e não o agregado
+sigma_vetor_pesos = np.std(vetor_pesos, axis=0)
+print(f'Desvio padrão combinado, por critério: {sigma_vetor_pesos}\n')
+
+
+try:
+    df_FUCOM_agregado['Pesos'] = gmean(vetor_pesos, axis=0)
+    sigma_vetor_pesos_agregado = np.std(df_FUCOM_agregado['Pesos']) # desvio padrão do vetor de pesos agregados
+except Exception as e:
+    print(f'Erro ao calcular a média geométrica: {e}')
+
+# Gráfico de barras circular
+plot_circular_barplot(df_FUCOM_agregado)
+
+print(f'FUCOM agregado:\n {df_FUCOM_agregado}\n')
+df_FUCOM_agregado.to_excel('FUCOM_Vetor_de_Pesos_Globais_Media_Geometrica.xlsx')
+
+
+#################### ARAS ####################
+
+def ARAS(df_input_alternativas, df_FUCOM_agregado, ind):
+    ### 1. Criar a matriz de decisão estendida ###
+    nova_linha = {}
+    for coluna in df_input_alternativas.columns[1:]:
+        criterio = df_input_alternativas.loc[0, coluna]
+        if criterio == 'min':
+            nova_linha[coluna] = df_input_alternativas[coluna].iloc[1:].min()
+        elif criterio == 'max':
+            nova_linha[coluna] = df_input_alternativas[coluna].iloc[1:].max()
+
+    df_input_alternativas = pd.concat([df_input_alternativas.iloc[:1], pd.DataFrame(nova_linha, index=[1]),
+                                       df_input_alternativas.iloc[1:]]).reset_index(drop=True)
+    df_input_alternativas.loc[0, 'Alternativas'] = ''
+    df_input_alternativas.loc[1, 'Alternativas'] = 'A0'
+
+    df_input_alternativas.to_excel(f'1.Matriz_de_Decisão_{ind}.xlsx', index=False)
+
+    ### 2. Normalização ###
+    for criterio in df_input_alternativas.columns:
+        if df_input_alternativas.at[0, criterio] == 'min':
+            soma_inv = (1 / df_input_alternativas[criterio][1:]).sum()
+            df_input_alternativas.loc[1:, criterio] = (1 / (df_input_alternativas[criterio][1:])) / soma_inv
+
+        if df_input_alternativas.at[0, criterio] == 'max':
+            soma = df_input_alternativas[criterio][1:].sum()
+            df_input_alternativas.loc[1:, criterio] = df_input_alternativas[criterio][1:] / soma
+
+    df_input_alternativas.to_excel(f'2.Matriz_de_Decisão_Normalizada_{ind}.xlsx', index=False)
+
+    ### 3. Incorporação dos pesos dos critérios ###
+    alt = df_input_alternativas['Alternativas']
+    linha_zero = df_input_alternativas.iloc[0:1].copy()
+    df_matriz_pond = df_input_alternativas.copy().iloc[1:len(df_input_alternativas['Alternativas'])] \
+        .drop(columns=['Alternativas'])
+
+    peso_crit = df_FUCOM_agregado['Pesos'].tolist()
+
+    if len(df_matriz_pond.columns) == len(peso_crit):
+        df_resultado = df_matriz_pond.copy()
+        for i, coluna in enumerate(df_resultado.columns):
+            df_resultado[coluna] = df_resultado[coluna] * peso_crit[i]
+
+        df_resultado.insert(0, 'Alternativas', alt)
+        df_resultado = pd.concat([linha_zero, df_resultado]).reset_index(drop=True)
+
+        df_resultado.to_excel(f'3.Matriz_de_Decisão_Normalizada_Ponderada_{ind}.xlsx', index=False)
+
+        ### 4. Função de Otimalidade e Qualidade Relativa ###
+        df_resultado = df_resultado.drop(index=0).reset_index(drop=True)
+        df_resultado.set_index('Alternativas', inplace=True)
+
+        df_resultado['Função de Otimalidade'] = df_resultado.sum(axis=1)
+        df_resultado.reset_index(inplace=True)
+
+        df_resultado['Qualidade Relativa'] = df_resultado['Função de Otimalidade'] / \
+                                             df_resultado['Função de Otimalidade'].iloc[0]
+        df_resultado.to_excel(f'4.Otimalidade_Qualidade_Relativa_{ind}.xlsx', index=False)
+
+        ### 5. Ordenação ###
+        df_resultado = df_resultado.sort_values(by='Qualidade Relativa', ascending=False)
+        df_resultado = df_resultado.reset_index(drop=True)
+
+        df_ordenado = df_resultado[['Alternativas', 'Qualidade Relativa']]
+        melhor_alt = df_ordenado.at[1, 'Alternativas']
+
+        return df_ordenado['Alternativas'].tolist()[1:], melhor_alt, df_ordenado['Qualidade Relativa'].tolist()[1:]
+
+    else:
+        print('O numero de colunas na matriz é diferente do comprimento do vetor pesos')
+
+
+
+#################### Aplicação ARAS - Original ####################
+
+aba_ARAS = input('Nome da aba do ARAS: ')
+arquivo_input_alt = 'Alt_ARAS_v2.xlsx'
+df_input_alternativas = pd.read_excel(arquivo_input_alt, sheet_name=aba_ARAS)
+ordem_alternativas, recomendacao, pontuacao_alt = ARAS(df_input_alternativas, df_FUCOM_agregado, 'Original')
+print(f'As alternativas, em ordem decrescente de qualidade é: {ordem_alternativas}\n'
+      f'A melhor alternativa é: {recomendacao}')
+
+
+
+#################### Análise de Sensibilidade ####################
+
+def monte_carlo_simulation(df_FUCOM_agregado, n_simulations, arquivo_input_alt, aba_ARAS):
+    resultados = []
+    pesos_originais = df_FUCOM_agregado['Pesos'].values
+    num_criterios = len(pesos_originais)
+
+    for q in range(n_simulations):
+        # utilizando distribuição normal
+        pesos_perturbados = np.random.normal(loc=pesos_originais,scale=sigma_vetor_pesos,size=num_criterios)
+
+        # utilizando distribuição uniforme
+        #pesos_perturbados = np.random.uniform(low=0*pesos_originais,high=pesos_originais,size=num_criterios)
+
+        pesos_perturbados = pesos_perturbados / np.sum(pesos_perturbados)
+
+        df_temp = df_FUCOM_agregado.copy()
+        df_temp['Pesos'] = pesos_perturbados
+
+        df_input_alternativas = pd.read_excel(arquivo_input_alt, sheet_name=aba_ARAS)
+        nova_ordem, nova_recomendacao, nova_pontuacao_alt = ARAS(df_input_alternativas, df_temp, 'Monte_Carlo')
+
+        resultados.append({
+            'Simulação': len(resultados) + 1,
+            'Pesos': pesos_perturbados,
+            'Ordem das Alternativas': nova_ordem,
+            'Pontuação das Alternativas': nova_pontuacao_alt,
+            'Melhor Alternativa': nova_recomendacao
+        })
+
+    return pd.DataFrame(resultados)
+
+##### Identificação dos outliers #####
+
+def identificar_outliers_iqr(df):
+    outliers_superiores = {}
+    outliers_inferiores = {}
+
+    for coluna in df.columns:
+        Q1 = df[coluna].quantile(0.25)
+        Q3 = df[coluna].quantile(0.75)
+        IQR = Q3 - Q1
+
+        outliers_sup = df[df[coluna] > (Q3 + 1.5 * IQR)][coluna]
+        outliers_inf = df[df[coluna] < (Q1 - 1.5 * IQR)][coluna]
+
+        outliers_superiores[coluna] = ', '.join(outliers_sup.astype(str))
+        outliers_inferiores[coluna] = ', '.join(outliers_inf.astype(str))
+
+    return pd.DataFrame({
+        'Outliers Superiores': pd.Series(outliers_superiores),
+        'Outliers Inferiores': pd.Series(outliers_inferiores)
+    })
+
+
+##### Redução de pesos #####
+
+def reduzir_pesos_simulation(df_FUCOM_agregado, reducoes, arquivo_input_alt, aba_ARAS):
+    resultados = []
+    pesos_originais = df_FUCOM_agregado['Pesos'].values
+
+    # Função para ajustar os pesos para que a soma seja igual a 1
+    def ajustar_pesos(pesos):
+        return pesos / np.sum(pesos)
+
+    # Identificar os critérios mais relevantes para reduzir
+    ordem_relevancia = np.argsort(-pesos_originais)  # Ordem decrescente de relevância
+
+    for i, crit_relev in enumerate(ordem_relevancia):
+        for reducao in reducoes:
+            pesos_perturbados = pesos_originais.copy()
+            peso_reduzido = pesos_perturbados[crit_relev] * reducao
+            pesos_perturbados[crit_relev] -= peso_reduzido
+            pesos_perturbados = ajustar_pesos(pesos_perturbados)
+
+            df_temp = df_FUCOM_agregado.copy()
+            df_temp['Pesos'] = pesos_perturbados
+
+            df_input_alternativas = pd.read_excel(arquivo_input_alt, sheet_name=aba_ARAS)
+            nova_ordem, nova_recomendacao, nova_pontuacao = ARAS(df_input_alternativas, df_temp, aba_ARAS)
+
+            resultados.append({
+                'Critério Reduzido': crit_relev + 1,  # Adiciona 1 para tornar a contagem 1-based
+                'Redução': reducao,
+                'Pesos': pesos_perturbados,
+                'Ordem das Alternativas': nova_ordem,
+                'Pontuação das Alternativas': nova_pontuacao,
+                'Melhor Alternativa': nova_recomendacao
+            })
+
+    return pd.DataFrame(resultados),ordem_relevancia
+
+
+##### Eliminação da pior alternativa #####
+
+def remover_pior_alternativa(df_FUCOM_agregado, arquivo_input_alt, aba_ARAS):
+    df_input_alternativas = pd.read_excel(arquivo_input_alt, sheet_name=aba_ARAS)
+    ordem_original, _, _ = ARAS(df_input_alternativas, df_FUCOM_agregado, 'Original')
+    pior_alternativa = ordem_original[-1]
+    df_input_alternativas = df_input_alternativas[df_input_alternativas['Alternativas'] != pior_alternativa]
+
+    nova_ordem, nova_recomendacao, _ = ARAS(df_input_alternativas, df_FUCOM_agregado, 'Remover_Pior_Alt')
+
+    resultado = {
+        'Pior Alternativa Removida': pior_alternativa,
+        'Nova Ordem das Alternativas': nova_ordem,
+        'Nova Melhor Alternativa': nova_recomendacao
+    }
+
+    return resultado
+
+
+#################### Execução da Análise de Sensibilidade ####################
+
+try:
+    while True:
+        an_sens = input('Fazer análise de sensibilidade: Y/N: ').upper()
+        if an_sens == 'N':
+            print('Análise de sensibilidade não será realizada.')
+            break
+
+        while True:
+
+            # Escolha da técnica a ser executada
+            print("Escolha o tipo de análise de sensibilidade:")
+            print("1. Variar os pesos dos critérios por método de Monte Carlo")
+            print("2. Variar os pesos por reduções de 15% a 90%")
+            print("3. Remover a pior alternativa da ordenação")
+            print("0. Sair")
+
+            tipo_an_sens = int(input("Digite 1, 2, 3 para escolher o tipo de análise. Digite 0 para sair: "))
+
+            if tipo_an_sens == 0:
+                print('Encerrando a análise de sensibilidade.')
+                break
+
+            # Monte Carlo
+            elif tipo_an_sens == 1:
+                n_simulations = int(input('Número de simulações desejadas: '))
+                df_resultados = monte_carlo_simulation(df_FUCOM_agregado, n_simulations, arquivo_input_alt, aba_ARAS)
+                df_resultados_exp = pd.concat([
+                    df_resultados[['Simulação', 'Ordem das Alternativas', 'Pontuação das Alternativas',
+                                   'Melhor Alternativa']],
+                    pd.DataFrame(df_resultados['Pesos'].tolist(),
+                                 columns=[f'C{i + 1}' for i in range(len(df_resultados['Pesos'].iloc[0]))])
+                ], axis=1)
+
+                # Identifica o critério de maior impacto para cada simulação
+                df_resultados_exp['Critério mais Impactante'] = df_resultados_exp.filter(like='C').idxmax(
+                    axis=1)
+                # Inicializar DataFrame para contagem de posições
+                alternativas = df_resultados_exp['Ordem das Alternativas'].iloc[0]
+                contagem_posicoes = pd.DataFrame(0, index=alternativas,
+                                                 columns=[f'Posição {i + 1}' for i in range(len(alternativas))])
+
+                # Preencher o DataFrame com as contagens de posições
+                for idx, row in df_resultados_exp.iterrows():
+                    ordem = row['Ordem das Alternativas']
+                    for pos, alt in enumerate(ordem):
+                        contagem_posicoes.at[alt, f'Posição {pos + 1}'] += 1
+
+                # Calcular as frequências
+                frequencia_posicoes = contagem_posicoes / n_simulations
+
+                pesos_df = pd.DataFrame(df_resultados['Pesos'].tolist(),
+                                        columns=[f'C{i + 1}' for i in range(len(df_resultados['Pesos'].iloc[0]))])
+                print(pesos_df)
+
+                # Cálculo das estatísticas para cada critério
+                estatisticas = pd.DataFrame({
+                    'Média': pesos_df.mean(),
+                    'Mediana': pesos_df.median(),
+                    'Desvio Padrão': pesos_df.std(),
+
+                })
+                # Identificar os outliers
+                outliers = identificar_outliers_iqr(pesos_df)
+
+                # Adicionar os outliers às estatísticas
+                estatisticas['Outliers Superiores'] = outliers['Outliers Superiores']
+                estatisticas['Outliers Inferiores'] = outliers['Outliers Inferiores']
+
+                # Salvar no Excel
+                with pd.ExcelWriter(f'{aba_ARAS}_Resultados_Simulacao_Monte_Carlo.xlsx') as writer:
+                    df_resultados_exp.to_excel(writer, sheet_name='Resultados', index=False)
+                    contagem_posicoes.to_excel(writer, sheet_name='Contagem de Posições')
+                    frequencia_posicoes.to_excel(writer, sheet_name='Frequência de Posições')
+                    estatisticas.to_excel(writer, sheet_name='Estatísticas dos Critérios')
+
+
+
+                plt.figure(figsize=(12, 8))
+                plt.boxplot(pesos_df.values, labels=pesos_df.columns)
+                plt.title('Distribuição dos Pesos dos Critérios nas Simulações')
+                plt.xlabel('Critérios')
+                plt.ylabel('Valores dos Pesos')
+                plt.grid(True)
+                plt.show()
+
+
+                # Gráfico de linhas para as mudanças de posição das alternativas
+
+                # Extrair as posições das alternativas para cada simulação
+                posicoes = {alt: [] for alt in df_resultados_exp['Ordem das Alternativas'].iloc[0]}
+
+                for idx, row in df_resultados_exp.iterrows():
+                    ordem = row['Ordem das Alternativas']
+                    for pos, alt in enumerate(ordem):
+                        posicoes[alt].append(pos + 1)  # Adicionar 1 para ter uma contagem baseada em 1
+
+                # Criar o gráfico de linhas
+                plt.figure(figsize=(12, 8))
+                for alt, posicoes_alt in posicoes.items():
+                    plt.plot(range(1, len(posicoes_alt) + 1), posicoes_alt, label=alt)
+
+                # Adicionar título e rótulos
+                plt.title('Mudanças de Posição das Alternativas conforme as Simulações')
+                plt.xlabel('Simulação')
+                plt.ylabel('Posição')
+                plt.legend(title='Alternativas', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+                # Mostrar o gráfico
+                plt.tight_layout()
+                plt.show()
+
+                # Histogramas das ordenações
+                # Supondo que 'Ordem das Alternativas' seja uma lista, converta-a para string se necessário
+                df_resultados_exp['Ordem das Alternativas'] = df_resultados_exp[
+                    'Ordem das Alternativas'].apply(lambda x: str(x))
+
+                # Contar a frequência de cada ordenação
+                contagem_ordens = df_resultados_exp['Ordem das Alternativas'].value_counts()
+
+                # Criar um dataframe com a contagem das ordenações
+                df_contagem_ordens = pd.DataFrame({
+                    'Ordem das Alternativas': contagem_ordens.index,
+                    'Frequência': contagem_ordens.values
+                })
+
+                # Plotar o histograma usando seaborn
+                plt.figure(figsize=(12, 8))
+                sns.barplot(x='Ordem das Alternativas', y='Frequência', data=df_contagem_ordens, palette='viridis')
+
+                plt.xlabel('Ordenações')
+                plt.xticks(fontsize=7)
+                plt.ylabel('Frequências')
+                plt.title('Frequência das Ordenações das Alternativas')
+                plt.show()
+
+                print('Arquivo com dados da análise de sensibilidade gerado com sucesso!')
+
+            # Redução 15-90% nos pesos dos critérios - por ordem de relevância
+            elif tipo_an_sens == 2:
+                reducoes = np.linspace(0.15, 0.90, 6)
+                df_resultados, crit_relev = reduzir_pesos_simulation(df_FUCOM_agregado, reducoes, arquivo_input_alt, aba_ARAS)
+                print(f'Critérios relevantes: {crit_relev+1}\n')
+
+                # Nome dos critérios relevantes
+                nomes_criterios = [f'C{i + 1}' for i in range(len(df_resultados['Pesos'].iloc[0]))]
+
+                # Expandir df_resultados para incluir coluna de critério mais relevante
+                df_resultados_exp = pd.concat([
+                    df_resultados[['Redução', 'Ordem das Alternativas', 'Melhor Alternativa']],
+                    pd.DataFrame(df_resultados['Pesos'].tolist(), columns=nomes_criterios)
+                ], axis=1)
+
+                # Adicionar coluna "Critério mais relevante"
+                df_resultados_exp['Critério relevante reduzido'] = ''
+                for i, crit in enumerate(crit_relev):
+                    start = i * 6
+                    end = start + 6
+                    df_resultados_exp.loc[start:end, 'Critério relevante reduzido'] = nomes_criterios[crit]
+
+                # Inicializar DataFrame para contagem de posições
+                alternativas = df_resultados_exp['Ordem das Alternativas'].iloc[0]
+                contagem_posicoes = pd.DataFrame(0, index=alternativas,
+                                                 columns=[f'Posição {i + 1}' for i in range(len(alternativas))])
+
+                # Preencher o DataFrame com as contagens de posições
+                for idx, row in df_resultados_exp.iterrows():
+                    ordem = row['Ordem das Alternativas']
+                    for pos, alt in enumerate(ordem):
+                        contagem_posicoes.at[alt, f'Posição {pos + 1}'] += 1
+
+                # Calcular as frequências
+                frequencia_posicoes = contagem_posicoes / len(df_resultados_exp['Redução'])
+
+                #df_resultados_exp.to_excel(f'{aba_ARAS}_Resultados_Reducoes_Pesos.xlsx', index=False)
+                with pd.ExcelWriter(f'{aba_ARAS}_Resultados_Reducoes_Pesos.xlsx') as writer:
+                    df_resultados_exp.to_excel(writer, sheet_name='Resultados', index=False)
+                    contagem_posicoes.to_excel(writer, sheet_name='Contagem de Posições')
+                    frequencia_posicoes.to_excel(writer, sheet_name='Frequência de Posições')
+
+
+
+                # Gráfico de linhas para as mudanças de posição das alternativas
+
+                # Extrair as posições das alternativas para cada simulação
+                posicoes = {alt: [] for alt in df_resultados_exp['Ordem das Alternativas'].iloc[0]}
+
+                for idx, row in df_resultados_exp.iterrows():
+                    ordem = row['Ordem das Alternativas']
+                    for pos, alt in enumerate(ordem):
+                        posicoes[alt].append(pos + 1)  # Adicionar 1 para ter uma contagem baseada em 1
+
+                # Criar o gráfico de linhas
+                plt.figure(figsize=(12, 8))
+                for alt, posicoes_alt in posicoes.items():
+                    plt.plot(range(1, len(posicoes_alt) + 1), posicoes_alt, label=alt)
+
+                # Adicionar título e rótulos
+                plt.title('Mudanças de Posição das Alternativas conforme as Simulações')
+                plt.xlabel('Simulação')
+                plt.ylabel('Posição')
+                plt.legend(title='Alternativas', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+                # Mostrar o gráfico
+                plt.tight_layout()
+                plt.show()
+
+                print('Arquivo com dados da análise de sensibilidade gerado com sucesso!')
+
+            # Eliminação da pior alternativa
+            elif tipo_an_sens == 3:
+                resultado = remover_pior_alternativa(df_FUCOM_agregado, arquivo_input_alt, aba_ARAS)
+                print(f"Pior alternativa removida: {resultado['Pior Alternativa Removida']}")
+                print(f"Nova ordem das alternativas: {resultado['Nova Ordem das Alternativas']}")
+                print(f"Nova melhor alternativa: {resultado['Nova Melhor Alternativa']}")
+            else:
+                print('Opção inválida. Por favor, digite 1, 2, 3 ou 0.')
+
+        if tipo_an_sens == 0:
+            break
+except ValueError:
+    print('Entrada inválida. Por favor, digite um valor válido.')
