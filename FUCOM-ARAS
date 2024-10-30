@@ -1,0 +1,195 @@
+import pandas as pd
+import numpy as np
+from scipy.optimize import minimize, Bounds, LinearConstraint, NonlinearConstraint
+import warnings
+import time
+warnings.filterwarnings('ignore', message='delta_grad == 0.0. Check if the approximated')
+warnings.filterwarnings('ignore', message='Values in x were outside bounds during a minimize step, clipping to bounds')
+
+
+#################################################  Multicritério #######################################################
+
+############## FUCOM ##############
+
+def FUCOM(comp_prio):
+    def Obj(X):
+        return X[-1]  # Minimizar X (a última variável)
+
+    np.random.seed(42)
+    vetor_crit = np.random.uniform(low=0.001, high=1.0, size=len(comp_prio))
+    vetor_crit = vetor_crit / np.sum(vetor_crit)
+    vetor_crit = np.append(vetor_crit, 1.0)  # Adiciona X como última variável
+
+    # Vetor dos pesos dos critérios
+    weights = vetor_crit[:-1]
+    X = vetor_crit[-1]
+
+    # Comparação ideal: w_k / w_{k+1}
+    ideal_1 = weights[:-1] / weights[1:]
+
+    # Comparação subjetiva, da comparação paritária entre n-1 critérios
+    subjetiva_1 = np.array(comp_prio[1:]) / np.array(comp_prio[:-1])
+
+    def desvio_1(vetor_crit):
+        weights = vetor_crit[:-1]
+        return np.abs((weights[:-1] / weights[1:]) - subjetiva_1) - vetor_crit[-1]
+
+    restr_1 = NonlinearConstraint(desvio_1, -np.inf, 0)
+
+    # Comparação ideal: w_k / w_{k+2}
+    ideal_2 = weights[:-2] / weights[2:]
+
+    # Comparação transitiva: w_k / w_{k+1} x w_{k+1} / w_{k+2}
+    subjetiva_2 = np.array(comp_prio[2:]) / np.array(comp_prio[:-2])
+
+    def desvio_2(vetor_crit):
+        weights = vetor_crit[:-1]
+        return np.abs((weights[:-2] / weights[2:]) - subjetiva_2) - vetor_crit[-1]
+
+    restr_2 = NonlinearConstraint(desvio_2, -np.inf, 0)
+
+    limites = Bounds(np.append(np.full(len(comp_prio), 0.0001), 0.0001), np.append(np.full(len(comp_prio), 1.0), 1.0))
+    restricao_soma_crit = LinearConstraint(np.append(np.ones(len(comp_prio)), 0), 1, 1)
+
+    solucao = minimize(Obj, vetor_crit, method='SLSQP', constraints=[restr_1, restr_2, restricao_soma_crit], bounds=limites)
+
+    if solucao.success:
+        w = solucao.x[:-1]
+        Sol = solucao.fun
+        return w, Sol
+    else:
+        print('Otimização não convergiu.')
+        return None, None
+
+#################### ARAS ####################
+def ARAS(df_FUCOM_agregado, ind):
+
+    np.random.seed()
+    num_criterios = len(df_FUCOM_agregado)
+    num_alternativas = 10
+
+    matriz_decisao = np.random.uniform(100, 1000, size=(num_alternativas, num_criterios))
+
+    colunas = [f'Critério {i+1}' for i in range(num_criterios)]
+    df_input_alternativas = pd.DataFrame(matriz_decisao, columns=colunas)
+
+    df_input_alternativas.insert(0, 'Alternativas', [f'A{i+1}' for i in range(num_alternativas)])
+
+    condicoes_criterios = np.random.choice(['max', 'min'], size=num_criterios)
+
+    linha_a0 = []
+    for i, condicao in enumerate(condicoes_criterios):
+        if condicao == 'max':
+            melhor_valor = df_input_alternativas.iloc[:, i+1].max()
+        else:
+            melhor_valor = df_input_alternativas.iloc[:, i+1].min()
+        linha_a0.append(melhor_valor)
+
+    linha_a0_df = pd.DataFrame([['A0'] + linha_a0], columns=df_input_alternativas.columns)
+    df_input_alternativas = pd.concat([linha_a0_df, df_input_alternativas], ignore_index=True)
+
+    condicoes_df = pd.DataFrame([[''] + condicoes_criterios.tolist()], columns=df_input_alternativas.columns)
+    df_input_alternativas = pd.concat([condicoes_df, df_input_alternativas], ignore_index=True)
+
+    df_input_alternativas.to_excel(f'1.Matriz_de_Decisão_{ind}.xlsx', index=False)
+
+    ### 2. Normalização ###
+    for criterio in df_input_alternativas.columns[1:]:
+        if df_input_alternativas.at[0, criterio] == 'min':
+            soma_inv = (1 / df_input_alternativas[criterio][1:]).sum()
+            df_input_alternativas.loc[1:, criterio] = (1 / df_input_alternativas[criterio][1:]) / soma_inv
+        elif df_input_alternativas.at[0, criterio] == 'max':
+            soma = df_input_alternativas[criterio][1:].sum()
+            df_input_alternativas.loc[1:, criterio] = df_input_alternativas[criterio][1:] / soma
+
+    # Salvar a matriz de decisão normalizada
+    df_input_alternativas.to_excel(f'2.Matriz_de_Decisão_Normalizada_{ind}.xlsx', index=False)
+
+    ### 3. Incorporação dos pesos dos critérios ###
+    alt = df_input_alternativas['Alternativas']
+    linha_zero = df_input_alternativas.iloc[0:1].copy()
+    df_matriz_pond = df_input_alternativas.copy().iloc[1:len(df_input_alternativas['Alternativas'])] \
+        .drop(columns=['Alternativas'])
+
+    peso_crit = df_FUCOM_agregado['Pesos'].tolist()
+
+    if len(df_matriz_pond.columns) == len(peso_crit):
+        df_resultado = df_matriz_pond.copy()
+        for i, coluna in enumerate(df_resultado.columns):
+            df_resultado[coluna] = df_resultado[coluna] * peso_crit[i]
+
+        df_resultado.insert(0, 'Alternativas', alt)
+        df_resultado = pd.concat([linha_zero, df_resultado]).reset_index(drop=True)
+
+        df_resultado.to_excel(f'3.Matriz_de_Decisão_Normalizada_Ponderada_{ind}.xlsx', index=False)
+
+        ### 4. Função de Otimalidade e Qualidade Relativa ###
+        df_resultado = df_resultado.drop(index=0).reset_index(drop=True)
+        df_resultado.set_index('Alternativas', inplace=True)
+
+        df_resultado['Função de Otimalidade'] = df_resultado.sum(axis=1)
+        df_resultado.reset_index(inplace=True)
+
+        df_resultado['Qualidade Relativa'] = df_resultado['Função de Otimalidade'] / \
+                                             df_resultado['Função de Otimalidade'].iloc[0]
+        df_resultado.to_excel(f'4.Otimalidade_Qualidade_Relativa_{ind}.xlsx', index=False)
+
+        ### 5. Ordenação ###
+        df_resultado = df_resultado.sort_values(by='Qualidade Relativa', ascending=False)
+        df_resultado = df_resultado.reset_index(drop=True)
+
+        df_ordenado = df_resultado[['Alternativas', 'Qualidade Relativa']]
+        melhor_alt = df_ordenado.at[0, 'Alternativas']
+
+        return df_ordenado['Alternativas'].tolist(), melhor_alt, df_ordenado['Qualidade Relativa'].tolist()
+
+    else:
+        print('O número de colunas na matriz é diferente do comprimento do vetor de pesos')
+
+
+
+#################### MAIN ####################
+def main():
+    resultados_comprimento = []
+    resultados_pesos = []
+    resultados_objetivo = []
+    comprimentos_nao_convergidos = []
+
+    for comprimento in range(3, 21):
+        comp_prio = np.random.uniform(low=1.0, high=10.0, size=comprimento)
+        comp_prio[0] = 1.0
+        comp_prio.sort()
+        comp_prio = np.round(comp_prio, 4)
+        print(f'Teste com vetor de comprimento: {comprimento}\nVetor comparação de prioridades: {comp_prio}\n')
+
+        pesos, objetivo = FUCOM(comp_prio)
+
+        if pesos is not None and objetivo <= 0.0025:
+            print(f'Otimização convergiu para {comprimento} critérios!\nVetor de pesos: {pesos}\n'
+                  f'Desvio da consistência completa: {round(objetivo, 4)}\n')
+
+            criterios = [f'C{i + 1}' for i in range(len(pesos))]
+            df_pesos = pd.DataFrame({'Critérios': criterios, 'Pesos': pesos})
+
+            arquivo_output_pesos = f'pesos_reais_{comprimento}_FUCOM.xlsx'
+            df_pesos.to_excel(arquivo_output_pesos, index=False)
+            print(f'Pesos salvos no arquivo {arquivo_output_pesos}\n\n')
+
+            resultados_comprimento.append(comprimento)
+            resultados_pesos.append(pesos)
+            resultados_objetivo.append(objetivo)
+
+        else:
+            print(f'A otimização não convergiu para comprimento {comprimento}\n\n.')
+            comprimentos_nao_convergidos.append(comprimento)
+
+        df_FUCOM_agregado = pd.DataFrame({'Pesos': np.random.uniform(0, 1, size=len(df_pesos))})
+        sol_ARAS = ARAS(df_FUCOM_agregado, 'Toy_Example')
+
+
+# Medição de tempo apenas da parte principal
+inicio = time.time()
+main()
+fim = time.time()
+print(f'Tempo de execução: {fim - inicio} s')
+
