@@ -12,3 +12,5 @@ Avaliação do artefato (DSR): validação de desempenho
      b) técnica de redução sucessiva de pesos em um intervalo 15-90%
   2) eliminação da pior alternativa
 Dados de entrada a partir de planilhas .xlsx: o código foi implementado para atender à instanciação do método FUCOM-ARAS. Para usar o método em outros contextos, é necessário adaptar o código, caso mudem as planilhas, ou suas abas, ou o número de analistas/especialistas.
+- Para o FUCOM: dados de entrada nas planilhas em arquivos .xlsx com nome iniciado por "input";
+- Para o ARAS: dados de entrada no arquivo "Alt_ARAS_v2.xlsx"
